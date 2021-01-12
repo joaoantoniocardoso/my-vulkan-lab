@@ -111,15 +111,25 @@ class HelloTriangleApplication {
     std::vector<VkFence> imagesInFlight;
     size_t currentFrame = 0;
 
+    bool framebufferResized = false;
+
 
     void initWindow() {
       glfwInit();
 
       glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-      glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+      //glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
       window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+      glfwSetWindowUserPointer(window, this);
+      glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+    }
 
+    static void framebufferResizeCallback(GLFWwindow* window, int width, int height) {
+      (void) width;
+      (void) height;
+      auto app = reinterpret_cast<HelloTriangleApplication *>(glfwGetWindowUserPointer(window));
+      app->framebufferResized = true;
     }
 
     void initVulkan() {
@@ -128,6 +138,7 @@ class HelloTriangleApplication {
       createSurface();
       pickPhysicalDevice();
       createLogicalDevice();
+
       createSwapChain();
       createImageViews();
       createRenderPass();
@@ -136,6 +147,37 @@ class HelloTriangleApplication {
       createCommandPool();
       createCommandBuffers();
       createSyncObjects();
+    }
+
+    void recreateSwapChain() {
+      int width = 0, height = 0;
+      glfwGetFramebufferSize(window, &width, &height);
+      while (width == 0 || height == 0) {
+        glfwGetFramebufferSize(window, &width, &height);
+        glfwWaitEvents();
+      }
+
+      vkDeviceWaitIdle(device);
+
+      cleanupSwapChain();
+
+      createSwapChain();
+      createImageViews();
+      createRenderPass();
+      createGraphicsPipeline();
+      createFramebuffers();
+      createCommandBuffers();
+    }
+
+    void cleanupSwapChain() {
+      destroyFrameBuffers();
+      vkFreeCommandBuffers(device, commandPool,
+          static_cast<uint32_t>(commandBuffers.size()), commandBuffers.data());
+      vkDestroyPipeline(device, graphicsPipeline, nullptr);
+      vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+      vkDestroyRenderPass(device, renderPass, nullptr);
+      destroyImageViews();
+      vkDestroySwapchainKHR(device, swapChain, nullptr);
     }
 
     void createSyncObjects() {
@@ -467,7 +509,7 @@ class HelloTriangleApplication {
 
       file.seekg(0);
       file.read(buffer.data(), fileSize);
-      std::cout << "reading shader: " << filename << ", size: " << fileSize << " bytes.\n";
+      //std::cout << "reading shader: " << filename << ", size: " << fileSize << " bytes.\n";
       file.close();
       return buffer;
     }
@@ -939,8 +981,14 @@ class HelloTriangleApplication {
       vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
 
       uint32_t imageIndex;
-      vkAcquireNextImageKHR(device, swapChain, 
+      VkResult result = vkAcquireNextImageKHR(device, swapChain, 
           UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+      if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        recreateSwapChain();
+        return;
+      } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        throw std::runtime_error("failed to acquire swap chain image!");
+      }
 
       if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
         vkWaitForFences(device, 1, &imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
@@ -982,21 +1030,23 @@ class HelloTriangleApplication {
       presentInfo.pImageIndices = &imageIndex;
       presentInfo.pResults = nullptr;
 
-      vkQueuePresentKHR(presentQueue, &presentInfo);
+      result = vkQueuePresentKHR(presentQueue, &presentInfo);
+      if (result == VK_ERROR_OUT_OF_DATE_KHR \
+          || result == VK_SUBOPTIMAL_KHR \
+          || framebufferResized) {
+        recreateSwapChain();
+      } else if (result != VK_SUCCESS) {
+        throw std::runtime_error("failed to present swap chain image!");
+      }
 
       currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
     void cleanup() {
+      cleanupSwapChain();
+
       destroySyncObjects();
       vkDestroyCommandPool(device, commandPool, nullptr);
-      destroyFrameBuffers();
-      vkDestroyPipeline(device, graphicsPipeline, nullptr);
-      vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-      vkDestroyRenderPass(device, renderPass, nullptr);
-      destroyImageViews();
-      vkDestroySwapchainKHR(device, swapChain, nullptr);
-
       vkDestroyDevice(device, nullptr);
 
       if (enableValidationLayers) {
